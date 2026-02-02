@@ -48,7 +48,8 @@ cd "$WORKSPACE_PATH" || {
 echo -e "${YELLOW}Fetching latest changes...${NC}"
 git fetch origin 2>&1
 git checkout main 2>&1
-git pull origin main 2>&1
+# Force sync with origin/main to ensure we're up-to-date (discard any local changes)
+git reset --hard origin/main 2>&1
 
 # Create feature branch for documentation updates
 echo -e "${YELLOW}Creating feature branch: $BRANCH_NAME${NC}"
@@ -79,14 +80,36 @@ if [ ! -f "$CARTOGRAPHER_SCRIPT" ]; then
     exit 1
 fi
 
+# Set up environment for Cartographer (API key)
+# Cartographer needs ANTHROPIC_API_KEY or CLAUDE_API_KEY
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$CLAUDE_API_KEY}"
+export CLAUDE_API_KEY="${CLAUDE_API_KEY:-$ANTHROPIC_API_KEY}"
+
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo -e "${RED}Error: ANTHROPIC_API_KEY or CLAUDE_API_KEY must be set${NC}"
+    git checkout main
+    git branch -D "$BRANCH_NAME" 2>/dev/null || true
+    exit 1
+fi
+
 # Run Cartographer programmatically using Claude API
+echo -e "${YELLOW}Running Cartographer with API...${NC}"
 node "$CARTOGRAPHER_SCRIPT" "$WORKSPACE_PATH" "$LOG_FILE"
 CARTOGRAPHER_EXIT_CODE=$?
+
+# Display the log file content for debugging
+if [ -f "$LOG_FILE" ]; then
+    echo -e "${YELLOW}Cartographer log output:${NC}"
+    cat "$LOG_FILE"
+fi
 
 if [ $CARTOGRAPHER_EXIT_CODE -ne 0 ]; then
     echo -e "${RED}Error: Cartographer execution failed (exit code: $CARTOGRAPHER_EXIT_CODE)${NC}"
     echo -e "${YELLOW}Check log file for details: $LOG_FILE${NC}"
-    # Don't exit yet - let the documentation check below handle it
+    # Clean up branch
+    git checkout main
+    git branch -D "$BRANCH_NAME" 2>/dev/null || true
+    exit 1
 fi
 
 echo -e "${GREEN}Cartographer execution completed${NC}"
@@ -94,11 +117,14 @@ echo -e "${GREEN}Cartographer execution completed${NC}"
 # Check if documentation was generated
 if [ ! -f "docs/CODEBASE_MAP.md" ]; then
     echo -e "${RED}Error: Documentation generation failed - CODEBASE_MAP.md not found${NC}"
+    echo -e "${YELLOW}Expected path: $WORKSPACE_PATH/docs/CODEBASE_MAP.md${NC}"
     # Clean up branch
     git checkout main
     git branch -D "$BRANCH_NAME" 2>/dev/null || true
     exit 1
 fi
+
+echo -e "${GREEN}Documentation file exists: docs/CODEBASE_MAP.md${NC}"
 
 # Check if there are actual changes (including untracked files)
 if ! git status --porcelain docs/ | grep -q .; then
